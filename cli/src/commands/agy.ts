@@ -10,9 +10,10 @@ export function parseAgyCommandOptions(commandArgs: string[]) {
     const options = parseRemoteAgentCommandOptions(
         commandArgs,
         AGY_PERMISSION_MODES,
-        ['remote'],
+        ['local', 'remote'],
     )
-    return { ...options, startingMode: options.startingMode ?? 'remote' as const }
+    const startingMode = options.startingMode ?? (options.startedBy === 'runner' ? 'remote' : 'local')
+    return { ...options, startingMode }
 }
 
 export const agyCommand: CommandDefinition = {

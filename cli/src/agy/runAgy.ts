@@ -31,12 +31,10 @@ export async function runAgy(opts: {
 
     logger.debug(`[agy] Starting with options: startedBy=${startedBy}, startingMode=${opts.startingMode}`);
 
-    // agy is headless-only: the web is the primary surface, so sessions always
-    // start in remote mode (no PTY, no local TUI mode).
-    const startingMode: 'local' | 'remote' = opts.startingMode ?? 'remote';
+    const startingMode: 'local' | 'remote' = opts.startingMode ?? (startedBy === 'terminal' ? 'local' : 'remote');
 
     const initialState: AgentState = {
-        controlledByUser: false,
+        controlledByUser: startingMode === 'local',
         startingMode
     };
 

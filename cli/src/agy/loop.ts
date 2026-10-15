@@ -2,6 +2,7 @@ import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { logger } from '@/ui/logger';
 import { runLocalRemoteSession } from '@/agent/loopBase';
 import { AgySession } from './session';
+import { agyLocalLauncher } from './agyLocalLauncher';
 import { agyHeadlessDriver } from './headless/agyHeadlessDriver';
 import { ApiClient, ApiSessionClient } from '@/lib';
 import type { AgyMode, PermissionMode } from './types';
@@ -25,8 +26,8 @@ interface AgyLoopOptions {
 export async function agyLoop(opts: AgyLoopOptions): Promise<void> {
     const logPath = logger.getLogPath();
     const startedBy = opts.startedBy ?? 'terminal';
-    const startingMode = opts.startingMode ?? 'remote';
-    const sessionMode: 'local' | 'remote' = 'remote';
+    const startingMode = opts.startingMode ?? (startedBy === 'terminal' ? 'local' : 'remote');
+    const sessionMode: 'local' | 'remote' = startingMode;
 
     const session = new AgySession({
         api: opts.api,
@@ -54,10 +55,7 @@ export async function agyLoop(opts: AgyLoopOptions): Promise<void> {
         session,
         startingMode,
         logTag: 'agy-loop',
-        runLocal: async (s) => {
-            logger.debug('[agy-loop] Local mode not supported; switching to remote');
-            return 'switch';
-        },
+        runLocal: agyLocalLauncher,
         runRemote: agyHeadlessDriver,
         onSessionReady: opts.onSessionReady
     });

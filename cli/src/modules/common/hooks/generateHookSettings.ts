@@ -133,3 +133,68 @@ export function cleanupHookSettingsFile(filepath: string, logLabel: string): voi
         logger.debug(`[${logLabel}] Failed to cleanup hook settings file: ${error}`);
     }
 }
+
+// ---------------------------------------------------------------------------
+// agy hooks.json generation
+// ---------------------------------------------------------------------------
+
+const PRE_TOOL_USE_TIMEOUT_SECONDS = 3600;
+const PRE_INVOCATION_TIMEOUT_SECONDS = 5;
+
+type AgyHookEntry = {
+    matcher: string;
+    hooks: Array<{
+        command: string;
+        timeout?: number;
+    }>;
+};
+
+type AgyFlatHookEntry = {
+    type: 'command';
+    command: string;
+    timeout?: number;
+};
+
+type AgyHooksJson = {
+    [hookName: string]: {
+        PreToolUse: AgyHookEntry[];
+        PreInvocation?: AgyFlatHookEntry[];
+    };
+};
+
+export type BuildAgyHooksJsonOptions = {
+    /** Command for the fail-closed permission bridge (PreToolUse). */
+    preToolUseCommand: string;
+    /** Command for the fail-open discovery hook (PreInvocation). */
+    preInvocationCommand?: string;
+    hookName?: string;
+};
+
+/**
+ * Build the JSON string for agy's hooks.json.
+ */
+export function buildAgyHooksJson({
+    preToolUseCommand,
+    preInvocationCommand,
+    hookName = 'hapi-bridge'
+}: BuildAgyHooksJsonOptions): string {
+    const content: AgyHooksJson = {
+        [hookName]: {
+            PreToolUse: [
+                {
+                    matcher: '*',
+                    hooks: [{ command: preToolUseCommand, timeout: PRE_TOOL_USE_TIMEOUT_SECONDS }]
+                }
+            ],
+            ...(preInvocationCommand
+                ? {
+                    PreInvocation: [
+                        { type: 'command' as const, command: preInvocationCommand, timeout: PRE_INVOCATION_TIMEOUT_SECONDS }
+                    ]
+                }
+                : {})
+        }
+    };
+    return JSON.stringify(content, null, 4);
+}
+
