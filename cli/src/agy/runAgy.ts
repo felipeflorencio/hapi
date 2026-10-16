@@ -13,6 +13,7 @@ import { registerSessionConfigRpc } from '@/agent/sessionConfigRpc';
 import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
 import { getInvokedCwd } from '@/utils/invokedCwd';
 import type { SessionEffort, SessionModel } from '@/api/types';
+import { readAgyNativeSettings } from './utils/agyNativeSettings';
 
 export async function runAgy(opts: {
     startedBy?: 'runner' | 'terminal';
@@ -65,7 +66,8 @@ export async function runAgy(opts: {
         effort: mode.effort,
     }));
 
-    let currentPermissionMode: PermissionMode = opts.permissionMode ?? 'request-review';
+    const nativeSettings = readAgyNativeSettings();
+    let currentPermissionMode: PermissionMode = opts.permissionMode ?? nativeSettings.toolPermission ?? 'request-review';
     let sessionModel: SessionModel = initialModel;
     let sessionEffort: SessionEffort | undefined = opts.effort ?? undefined;
 
