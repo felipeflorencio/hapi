@@ -52,13 +52,17 @@ type PermissionResponse = {
     answers?: Record<string, string[]> | Record<string, { answers: string[] }>;
 };
 
+// Local, read-only inspection plus agy's own question tools. Deliberately
+// excludes the network tools (`read_url_content`, `search_web`): those reach
+// outside the machine, so the URL or query can carry workspace content out,
+// and the response pulls untrusted text back into the model's context. They
+// fall through to the mode check instead, which still auto-approves them
+// under `always-proceed`.
 const AGY_AUTO_ALLOW_TOOLS = new Set<string>([
     'view_file',
     'list_dir',
     'find_by_name',
     'grep_search',
-    'read_url_content',
-    'search_web',
     'list_permissions',
     'ask_question',
     'ask_user_question'
@@ -187,7 +191,7 @@ export class AgyPermissionHandler extends BasePermissionHandler<PermissionRespon
             return Promise.resolve({ permissionDecision: 'allow' });
         }
 
-        // 2. Pure read-only tools and native questions — never gated.
+        // 2. Local read-only tools and native questions — never gated.
         if (AGY_AUTO_ALLOW_TOOLS.has(toolName)) {
             return Promise.resolve({ permissionDecision: 'allow' });
         }

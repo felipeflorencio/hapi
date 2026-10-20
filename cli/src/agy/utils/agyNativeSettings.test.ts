@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readAgyNativeSettings } from './agyNativeSettings';
+import { isTighteningNativeMode, readAgyNativeSettings } from './agyNativeSettings';
 
 describe('readAgyNativeSettings', () => {
     it('reads toolPermission: always-proceed and model from settings.json', () => {
@@ -39,5 +39,22 @@ describe('readAgyNativeSettings', () => {
 
     it('returns empty object when file does not exist or is invalid JSON', () => {
         expect(readAgyNativeSettings('/nonexistent/path/settings.json')).toEqual({});
+    });
+});
+
+describe('isTighteningNativeMode', () => {
+    it('lets a live settings edit tighten a running session', () => {
+        expect(isTighteningNativeMode('request-review')).toBe(true);
+    });
+
+    it('refuses to let a live settings edit loosen a running session', () => {
+        // The settings file is writable by anything running as this user, so
+        // honouring this mid-session would retire the approval prompts the
+        // session started under.
+        expect(isTighteningNativeMode('always-proceed')).toBe(false);
+    });
+
+    it('treats an absent toolPermission as no change', () => {
+        expect(isTighteningNativeMode(undefined)).toBe(false);
     });
 });

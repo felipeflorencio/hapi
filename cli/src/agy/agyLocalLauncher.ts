@@ -6,7 +6,7 @@ import { createAgySessionScanner } from './utils/agySessionScanner';
 import { AgyPermissionHandler } from './utils/agyPermissionHandler';
 import { buildCanonicalAskUserQuestionInput, isAgyAskQuestionToolCall } from './utils/agyAskQuestion';
 import { buildAgyQuestionKeys } from './utils/agyQuestionKeys';
-import { readAgyNativeSettings } from './utils/agyNativeSettings';
+import { isTighteningNativeMode, readAgyNativeSettings } from './utils/agyNativeSettings';
 import { BaseLocalLauncher } from '@/modules/common/launcher/BaseLocalLauncher';
 import { startHookServer, extractToolName, extractToolInput, extractToolUseId } from '@/claude/utils/startHookServer';
 import { buildAgyHooksJson } from '@/modules/common/hooks/generateHookSettings';
@@ -33,10 +33,14 @@ export async function agyLocalLauncher(session: AgySession): Promise<LocalLaunch
     // 1. Setup permission handler with Dual-Approval (local TTY + remote web/mobile)
     const permissionHandler = new AgyPermissionHandler(session.client, {
         getPermissionMode: () => {
+            // Live `/settings` edits inside agy may only tighten the session.
+            // Loosening stays a deliberate HAPI-side action (onModeChange).
             const currentNativeMode = readAgyNativeSettings().toolPermission;
             if (currentNativeMode && currentNativeMode !== lastObservedNativeMode) {
                 lastObservedNativeMode = currentNativeMode;
-                session.setPermissionMode(currentNativeMode);
+                if (isTighteningNativeMode(currentNativeMode)) {
+                    session.setPermissionMode(currentNativeMode);
+                }
             }
             return session.getPermissionMode() as any;
         },

@@ -9,6 +9,17 @@ export type AgyNativeSettings = {
     model?: string;
 };
 
+/**
+ * Whether a `toolPermission` read from the native settings file may be applied
+ * to a session that is already running. Only tightening is allowed: the file
+ * is writable by anything running as this user, so honouring a loosening edit
+ * mid-session would silently retire approval prompts the session started
+ * under. Loosening stays a deliberate HAPI-side action.
+ */
+export function isTighteningNativeMode(mode: PermissionMode | undefined): boolean {
+    return mode === 'request-review';
+}
+
 export function getAgySettingsPath(): string {
     const baseDir = process.env.AGY_HOME || join(homedir(), '.gemini', 'antigravity-cli');
     return join(baseDir, 'settings.json');

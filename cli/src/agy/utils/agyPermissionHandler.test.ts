@@ -144,6 +144,37 @@ describe('AgyPermissionHandler auto-allow', () => {
         expect(mockTty.getOutput()).toBe('');
     });
 
+    it('gates the network tools instead of auto-allowing them', async () => {
+        const mockTty = createMockTty();
+        const { handler, getAgentState } = createHarness({ ttyStreams: mockTty.streams });
+
+        // `read_url_content` can carry workspace content out in the URL and
+        // pulls untrusted text back in, so it must not short-circuit the
+        // mode check the way the local read-only tools do.
+        const pending = handler.requestDecision('url-1', 'read_url_content', {
+            Url: 'https://example.com'
+        });
+
+        expect(getAgentState().requests['url-1']).toBeDefined();
+        expect(stripAnsi(mockTty.getOutput())).toContain('Approve read_url_content');
+
+        mockTty.input.emit('data', Buffer.from('y'));
+        await expect(pending).resolves.toMatchObject({ permissionDecision: 'allow' });
+    });
+
+    it('still auto-allows the network tools under always-proceed', async () => {
+        const mockTty = createMockTty();
+        const { handler, getAgentState } = createHarness({
+            getPermissionMode: () => 'always-proceed',
+            ttyStreams: mockTty.streams
+        });
+
+        const result = await handler.requestDecision('web-1', 'search_web', { query: 'bun' });
+        expect(result).toEqual({ permissionDecision: 'allow' });
+        expect(Object.keys(getAgentState().requests)).toHaveLength(0);
+        expect(mockTty.getOutput()).toBe('');
+    });
+
     it('auto-allows everything in always-proceed mode', async () => {
         const mockTty = createMockTty();
         const { handler } = createHarness({
