@@ -81,6 +81,226 @@ describe('buildPluginSource (via ensureOpencodeHookPlugin)', () => {
     });
 });
 
+type HookCall = { event: string; payload: unknown; sessionId: string | null };
+
+/**
+ * Load the generated plugin the way opencode does - as an ES module - and
+ * drive its opencode 2.x entry point with a fake context. This is the only
+ * place the generated translation logic is executable, so the v2 event
+ * vocabulary is asserted here rather than by string matching.
+ */
+async function runV2Plugin(events: unknown[], root: string): Promise<HookCall[]> {
+    const pluginPath = ensureOpencodeHookPlugin(root, 'http://127.0.0.1:1/hook', 'tok');
+    const calls: HookCall[] = [];
+    const fetchStub = vi.fn(async (_url: string, init: { body: string }) => {
+        calls.push(JSON.parse(init.body) as HookCall);
+        return { ok: true } as unknown as Response;
+    });
+    vi.stubGlobal('fetch', fetchStub);
+
+    const module = await import(/* @vite-ignore */ pluginPath) as {
+        default: { id: string; setup: (context: unknown) => Promise<void> };
+    };
+
+    let drained = false;
+    const context = {
+        event: {
+            subscribe: () => (async function* () {
+                for (const event of events) {
+                    yield event;
+                }
+                drained = true;
+            })()
+        }
+    };
+
+    await module.default.setup(context);
+    // setup detaches the consumer on purpose, so wait for the generator to
+    // finish instead of assuming a single microtask is enough.
+    for (let i = 0; i < 200 && !drained; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    vi.unstubAllGlobals();
+    return calls;
+}
+
+function v2(type: string, data: Record<string, unknown>, durable?: Record<string, unknown>): unknown {
+    return { id: `evt_${type}`, created: 1, type, ...(durable ? { durable } : {}), data };
+}
+
+describe('generated plugin: opencode loader contract', () => {
+    let tempRoot: string;
+
+    beforeEach(() => {
+        tempRoot = makeTempDir('hapi-hookplugin-shape-');
+    });
+
+    afterEach(() => {
+        rmSync(tempRoot, { recursive: true, force: true });
+        resetHapiHome();
+    });
+
+    it('exports a default definition carrying an id and a setup function', () => {
+        const source = readFileSync(ensureOpencodeHookPlugin(tempRoot, 'http://h/hook', 't'), 'utf-8');
+        // opencode 2.x rejects the module outright without this: its loader
+        // requires `export default` with an id plus setup/effect. The 1.x
+        // named export alone produced
+        // `PluginModule.LoadError: Missing key at ["default"]`.
+        expect(source).toContain('export default {');
+        expect(source).toContain("id: 'hapi-hook'");
+        expect(source).toContain('setup: async (context) => {');
+    });
+
+    it('keeps the opencode 1.x named export so one file serves both majors', () => {
+        const source = readFileSync(ensureOpencodeHookPlugin(tempRoot, 'http://h/hook', 't'), 'utf-8');
+        expect(source).toContain('export const HapiHookPlugin = async () => {');
+    });
+});
+
+describe('generated plugin: opencode 2.x event translation', () => {
+    let tempRoot: string;
+
+    beforeEach(() => {
+        tempRoot = makeTempDir('hapi-hookplugin-v2-');
+    });
+
+    afterEach(() => {
+        rmSync(tempRoot, { recursive: true, force: true });
+        resetHapiHome();
+    });
+
+    it('stays inert when the context exposes no event surface', async () => {
+        const pluginPath = ensureOpencodeHookPlugin(tempRoot, 'http://127.0.0.1:1/hook', 'tok');
+        const module = await import(/* @vite-ignore */ pluginPath) as {
+            default: { setup: (context: unknown) => Promise<void> };
+        };
+        // Throwing here would be reported as a load failure on every
+        // reconnect; the storage scanner still carries messages.
+        await expect(module.default.setup({})).resolves.toBeUndefined();
+    });
+
+    it('translates session lifecycle events into the launcher vocabulary', async () => {
+        const calls = await runV2Plugin([
+            v2('session.created', { sessionID: 'ses_1', info: { id: 'ses_1', title: 'x' } }),
+            v2('session.renamed', { sessionID: 'ses_1', info: { id: 'ses_1', title: 'y' } })
+        ], tempRoot);
+
+        expect(calls.map((call) => call.event)).toEqual(['session.created', 'session.updated']);
+        expect(calls[0].sessionId).toBe('ses_1');
+        expect(calls[0].payload).toEqual({ info: { id: 'ses_1', title: 'x' } });
+    });
+
+    it('translates streamed text into message.part.updated with the delta', async () => {
+        const calls = await runV2Plugin([
+            v2('session.text.delta', {
+                sessionID: 'ses_1', assistantMessageID: 'msg_1', textID: 'txt_1', delta: 'hel'
+            }),
+            v2('session.text.ended', {
+                sessionID: 'ses_1', assistantMessageID: 'msg_1', textID: 'txt_1'
+            })
+        ], tempRoot);
+
+        expect(calls).toHaveLength(2);
+        expect(calls[0]).toEqual({
+            event: 'message.part.updated',
+            payload: { part: { type: 'text', id: 'txt_1', messageID: 'msg_1' }, delta: 'hel' },
+            sessionId: 'ses_1'
+        });
+        expect(calls[1].payload).toEqual({ part: { type: 'text', id: 'txt_1', messageID: 'msg_1' } });
+    });
+
+    it('carries the tool name from called through to the success event', async () => {
+        const calls = await runV2Plugin([
+            v2('session.tool.input.started', {
+                sessionID: 'ses_1', assistantMessageID: 'msg_1', callID: 'call_1', name: 'read'
+            }),
+            v2('session.tool.called', {
+                sessionID: 'ses_1', assistantMessageID: 'msg_1', callID: 'call_1',
+                tool: 'read', input: { filePath: 'a.txt' }
+            }),
+            v2('session.tool.success', {
+                sessionID: 'ses_1', assistantMessageID: 'msg_1', callID: 'call_1', result: 'contents'
+            })
+        ], tempRoot);
+
+        expect(calls.map((call) => call.event)).toEqual(['tool.execute.before', 'tool.execute.after']);
+        expect(calls[0].payload).toEqual({
+            tool: { id: 'call_1', name: 'read', input: { filePath: 'a.txt' } }
+        });
+        // `session.tool.success` carries only the callID; the launcher drops
+        // nameless tool events, so the name has to survive from `.called`.
+        expect(calls[1].payload).toMatchObject({
+            tool: { id: 'call_1', name: 'read', input: { filePath: 'a.txt' } },
+            output: 'contents'
+        });
+    });
+
+    it('reports a failed tool as tool.execute.after with the error', async () => {
+        const calls = await runV2Plugin([
+            v2('session.tool.called', {
+                sessionID: 'ses_1', callID: 'call_2', tool: 'bash', input: { command: 'false' }
+            }),
+            v2('session.tool.failed', {
+                sessionID: 'ses_1', callID: 'call_2', error: { name: 'UnknownError' }
+            })
+        ], tempRoot);
+
+        expect(calls[1].event).toBe('tool.execute.after');
+        expect(calls[1].payload).toMatchObject({ error: { name: 'UnknownError' } });
+    });
+
+    it('drops a tool result whose call was never announced', async () => {
+        const calls = await runV2Plugin([
+            v2('session.tool.success', { sessionID: 'ses_1', callID: 'unknown', result: 'x' })
+        ], tempRoot);
+
+        expect(calls).toEqual([]);
+    });
+
+    it('accepts the session.next.* spelling of the same events', async () => {
+        const calls = await runV2Plugin([
+            v2('session.next.text.delta', {
+                sessionID: 'ses_1', assistantMessageID: 'msg_1', textID: 'txt_1', delta: 'hi'
+            })
+        ], tempRoot);
+
+        expect(calls.map((call) => call.event)).toEqual(['message.part.updated']);
+    });
+
+    it('ignores the domain reconciliation firehose', async () => {
+        // subscribe() delivers every event regardless of the type argument,
+        // so these arrive on every startup and must not reach the hook.
+        const calls = await runV2Plugin([
+            v2('model.updated', {}),
+            v2('skill.updated', {}),
+            v2('plugin.updated', {}),
+            v2('session.usage.updated', { sessionID: 'ses_1', cost: 0 }),
+            v2('location.shutdown', {})
+        ], tempRoot);
+
+        expect(calls).toEqual([]);
+    });
+
+    it('falls back to the durable aggregate id when data carries no sessionID', async () => {
+        const calls = await runV2Plugin([
+            v2('session.created', { info: { id: 'ses_9' } }, { aggregateID: 'ses_9', seq: 0, version: 1 })
+        ], tempRoot);
+
+        expect(calls[0].sessionId).toBe('ses_9');
+    });
+
+    it('passes permission events through unchanged', async () => {
+        const calls = await runV2Plugin([
+            v2('permission.asked', { sessionID: 'ses_1', id: 'perm_1' }),
+            v2('permission.replied', { sessionID: 'ses_1', id: 'perm_1', response: 'once' })
+        ], tempRoot);
+
+        expect(calls.map((call) => call.event)).toEqual(['permission.asked', 'permission.replied']);
+        expect(calls[0].payload).toMatchObject({ id: 'perm_1' });
+    });
+});
+
 describe('ensurePluginRuntime (via ensureOpencodeHookPlugin)', () => {
     let tempRoot: string;
 
